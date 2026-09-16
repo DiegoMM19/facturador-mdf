@@ -62,23 +62,34 @@ if "upload_history" not in st.session_state:
     st.session_state.upload_history = []
 
 # ============ CONFIGURACIÓN ============
-   @st.cache_resource
-   def init_anthropic():
-       api_key = st.secrets.get("ANTHROPIC_API_KEY")
-       if not api_key:
-           st.error("⚠️ Falta configurar ANTHROPIC_API_KEY en Streamlit Secrets")
-           st.stop()
-       return anthropic.Anthropic(api_key=api_key)
+@st.cache_resource
+def init_anthropic():
+    api_key = st.secrets.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        st.error("⚠️ Falta configurar ANTHROPIC_API_KEY en Streamlit Secrets")
+        st.stop()
+    return anthropic.Anthropic(api_key=api_key)
 
 @st.cache_resource
 def init_gspread():
     """Inicializa conexión con Google Sheets"""
     try:
-        # Obtener credenciales desde Streamlit secrets
-        credentials_dict = st.secrets.get("google_sheets_credentials")
-        if not credentials_dict:
+        creds = st.secrets.get("google_sheets_credentials")
+        if not creds:
             st.warning("⚠️ Configura las credenciales de Google Sheets en Streamlit secrets")
             return None
+
+        if isinstance(creds, str):
+            creds = json.loads(creds)
+
+        credentials = Credentials.from_service_account_info(
+            creds,
+            scopes=["https://www.googleapis.com/auth/spreadsheets"]
+        )
+        return gspread.authorize(credentials)
+    except Exception as e:
+        st.error(f"Error inicializando Google Sheets: {e}")
+        return None
 
         credentials = Credentials.from_service_account_info(
             credentials_dict,
