@@ -134,7 +134,7 @@ Responde SOLO en formato JSON, así:
 Si no puedes extraer un dato, escribe "No disponible". Sé preciso."""
 
     message = client.messages.create(
-           model="claude-sonnet-4-6",,
+           model="claude-sonnet-4-6",
         max_tokens=1024,
         messages=[
             {
