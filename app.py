@@ -62,9 +62,13 @@ if "upload_history" not in st.session_state:
     st.session_state.upload_history = []
 
 # ============ CONFIGURACIÓN ============
-@st.cache_resource
-def init_anthropic():
-    return anthropic.Anthropic()
+   @st.cache_resource
+   def init_anthropic():
+       api_key = st.secrets.get("ANTHROPIC_API_KEY")
+       if not api_key:
+           st.error("⚠️ Falta configurar ANTHROPIC_API_KEY en Streamlit Secrets")
+           st.stop()
+       return anthropic.Anthropic(api_key=api_key)
 
 @st.cache_resource
 def init_gspread():
