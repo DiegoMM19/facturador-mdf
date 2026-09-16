@@ -74,25 +74,18 @@ def init_anthropic():
 def init_gspread():
     """Inicializa conexión con Google Sheets"""
     try:
+        # Obtener credenciales desde Streamlit secrets
         creds = st.secrets.get("google_sheets_credentials")
         if not creds:
             st.warning("⚠️ Configura las credenciales de Google Sheets en Streamlit secrets")
             return None
 
+        # Si es string (JSON), convertir a diccionario
         if isinstance(creds, str):
             creds = json.loads(creds)
 
         credentials = Credentials.from_service_account_info(
             creds,
-            scopes=["https://www.googleapis.com/auth/spreadsheets"]
-        )
-        return gspread.authorize(credentials)
-    except Exception as e:
-        st.error(f"Error inicializando Google Sheets: {e}")
-        return None
-
-        credentials = Credentials.from_service_account_info(
-            credentials_dict,
             scopes=["https://www.googleapis.com/auth/spreadsheets"]
         )
         return gspread.authorize(credentials)
@@ -111,22 +104,25 @@ def extract_ticket_data(image_bytes):
     # Convertir imagen a base64
     image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    prompt = """Analiza esta imagen de un ticket/recibo y extrae la siguiente información:
+    prompt = """Analiza esta imagen de un ticket/recibo de compra y extrae la siguiente información,
+pensando específicamente en los datos que piden los portales de facturación en línea (como el de Walmart):
 
 1. **Proveedor**: ¿De dónde es? (Walmart, Costco, Gasolinera, otro)
 2. **Fecha**: Fecha de la compra (formato DD/MM/YYYY)
 3. **Monto**: Total pagado (solo número con 2 decimales)
-4. **Número de Ticket**: Folio, ticket número o código de transacción
-5. **ID Web**: Si aparece código para facturación en línea (como "Código para facturar: XXXXX")
-6. **Artículos principales**: Lista breve de qué se compró (máximo 3 items)
+4. **Número de Ticket**: El código largo que suele aparecer como "TC#" o similar (ej. TC#3874035933780703704)
+5. **Número de Transacción**: El código corto que suele aparecer como "TR#" (ej. TR#08236)
+6. **Código Postal**: El código postal de la tienda/sucursal, si aparece en la dirección impresa
+7. **Artículos principales**: Lista breve de qué se compró (máximo 3 items)
 
 Responde SOLO en formato JSON, así:
 {
     "proveedor": "Walmart",
     "fecha": "16/09/2026",
     "monto": "808.93",
-    "numero_ticket": "TCH#3874035933434",
-    "id_web": "No aplica",
+    "numero_ticket": "3874035933780703704",
+    "numero_transaccion": "08236",
+    "codigo_postal": "02770",
     "articulos": ["Roblox 300", "Artículos varios"],
     "confianza": "Alta"
 }
@@ -134,7 +130,7 @@ Responde SOLO en formato JSON, así:
 Si no puedes extraer un dato, escribe "No disponible". Sé preciso."""
 
     message = client.messages.create(
-           model="claude-sonnet-4-6",
+        model="claude-sonnet-4-6",
         max_tokens=1024,
         messages=[
             {
@@ -184,7 +180,8 @@ def save_to_sheets(data, gc):
             data.get("fecha", ""),
             data.get("monto", ""),
             data.get("numero_ticket", ""),
-            data.get("id_web", ""),
+            data.get("numero_transaccion", ""),
+            data.get("codigo_postal", ""),
             data.get("articulos", ""),
             "✓ Confirmado",
         ]
@@ -260,8 +257,9 @@ if st.session_state.extracted_data:
         monto = st.text_input("Monto ($)", value=data.get("monto", ""))
 
     with col2:
-        numero_ticket = st.text_input("Número de Ticket", value=data.get("numero_ticket", ""))
-        id_web = st.text_input("ID Web/Código Facturación", value=data.get("id_web", ""))
+        numero_ticket = st.text_input("Número de Ticket (TC#)", value=data.get("numero_ticket", ""))
+        numero_transaccion = st.text_input("Número de Transacción (TR#)", value=data.get("numero_transaccion", ""))
+        codigo_postal = st.text_input("Código Postal", value=data.get("codigo_postal", ""))
         articulos = st.text_area("Artículos", value=", ".join(data.get("articulos", [])))
 
     confianza = st.select_slider(
@@ -281,7 +279,8 @@ if st.session_state.extracted_data:
                 "fecha": fecha,
                 "monto": monto,
                 "numero_ticket": numero_ticket,
-                "id_web": id_web,
+                "numero_transaccion": numero_transaccion,
+                "codigo_postal": codigo_postal,
                 "articulos": [a.strip() for a in articulos.split(",")],
                 "confianza": confianza
             }
@@ -293,7 +292,8 @@ if st.session_state.extracted_data:
                 "fecha": fecha,
                 "monto": monto,
                 "numero_ticket": numero_ticket,
-                "id_web": id_web,
+                "numero_transaccion": numero_transaccion,
+                "codigo_postal": codigo_postal,
                 "articulos": articulos,
                 "status": "✓ Confirmado"
             })
@@ -326,8 +326,9 @@ if st.session_state.extracted_data:
 Proveedor: {proveedor}
 Fecha: {fecha}
 Monto: ${monto}
-Ticket: {numero_ticket}
-ID Web: {id_web}
+Número de Ticket: {numero_ticket}
+Número de Transacción: {numero_transaccion}
+Código Postal: {codigo_postal}
 Artículos: {articulos}
             """
             st.code(data_text, language="text")
