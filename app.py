@@ -61,6 +61,16 @@ if "confirmed" not in st.session_state:
 if "upload_history" not in st.session_state:
     st.session_state.upload_history = []
 
+# Portales de facturación conocidos (se usan solo si el Sheet aún no tiene ninguno guardado)
+PORTALES_DEFAULT = {
+    "Walmart": "https://facturacion-clientes.walmart.com/ticket",
+    "Costco": "https://www3.costco.com.mx/facturacion",
+    "Chedraui": "https://www.chedrauimovil.com/facturacion",
+    "Soriana": "https://www.soriana.com/facturacionelectronica/facturacionelectronica.html",
+}
+
+PERFIL_CAMPOS = ["RFC", "Nombre / Razón Social", "Código Postal", "Email", "Régimen Fiscal", "Uso de CFDI"]
+
 # ============ CONFIGURACIÓN ============
 @st.cache_resource
 def init_anthropic():
@@ -193,6 +203,72 @@ def save_to_sheets(data, gc):
         st.error(f"Error guardando en Google Sheets: {e}")
         return False
 
+def get_or_create_worksheet(spreadsheet, name, headers):
+    """Obtiene una pestaña del Sheet, o la crea con encabezados si no existe"""
+    try:
+        return spreadsheet.worksheet(name)
+    except gspread.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=name, rows=100, cols=len(headers) + 2)
+        ws.append_row(headers)
+        return ws
+
+def load_perfil(gc):
+    """Lee el perfil fiscal guardado (una sola fila de datos fijos)"""
+    try:
+        spreadsheet = gc.open("Facturas_Miles_de_Flor")
+        ws = get_or_create_worksheet(spreadsheet, "Perfil", PERFIL_CAMPOS)
+        registros = ws.get_all_values()
+        if len(registros) >= 2:
+            return dict(zip(registros[0], registros[1]))
+        return {}
+    except Exception:
+        return {}
+
+def save_perfil(gc, perfil_dict):
+    """Guarda (sobrescribe) el perfil fiscal en su pestaña"""
+    try:
+        spreadsheet = gc.open("Facturas_Miles_de_Flor")
+        ws = get_or_create_worksheet(spreadsheet, "Perfil", PERFIL_CAMPOS)
+        ws.clear()
+        ws.append_row(PERFIL_CAMPOS)
+        ws.append_row([perfil_dict.get(campo, "") for campo in PERFIL_CAMPOS])
+        return True
+    except Exception as e:
+        st.error(f"Error guardando el perfil: {e}")
+        return False
+
+def load_portales(gc):
+    """Lee el catálogo Proveedor -> URL de facturación"""
+    try:
+        spreadsheet = gc.open("Facturas_Miles_de_Flor")
+        ws = get_or_create_worksheet(spreadsheet, "Portales", ["Proveedor", "URL"])
+        registros = ws.get_all_values()[1:]  # saltar encabezado
+        portales = {fila[0]: fila[1] for fila in registros if len(fila) >= 2 and fila[0]}
+        if not portales:
+            # Primera vez: precargar los conocidos
+            for proveedor, url in PORTALES_DEFAULT.items():
+                ws.append_row([proveedor, url])
+            portales = dict(PORTALES_DEFAULT)
+        return portales
+    except Exception:
+        return dict(PORTALES_DEFAULT)
+
+def save_portal(gc, proveedor, url):
+    """Agrega o actualiza un portal de facturación en el catálogo"""
+    try:
+        spreadsheet = gc.open("Facturas_Miles_de_Flor")
+        ws = get_or_create_worksheet(spreadsheet, "Portales", ["Proveedor", "URL"])
+        registros = ws.get_all_values()
+        for i, fila in enumerate(registros[1:], start=2):
+            if fila and fila[0].strip().lower() == proveedor.strip().lower():
+                ws.update(f"A{i}:B{i}", [[proveedor, url]])
+                return True
+        ws.append_row([proveedor, url])
+        return True
+    except Exception as e:
+        st.error(f"Error guardando el portal: {e}")
+        return False
+
 def generate_excel(history):
     """Genera archivo Excel con historial"""
     df = pd.DataFrame(history)
@@ -317,6 +393,15 @@ if st.session_state.extracted_data:
                     unsafe_allow_html=True
                 )
 
+            # Buscar si hay un portal de facturación conocido para este proveedor
+            portales = load_portales(gc) if gc else dict(PORTALES_DEFAULT)
+            link_encontrado = None
+            for nombre_portal, url_portal in portales.items():
+                if nombre_portal.strip().lower() in proveedor.strip().lower() or proveedor.strip().lower() in nombre_portal.strip().lower():
+                    link_encontrado = (nombre_portal, url_portal)
+                    break
+            st.session_state["link_facturacion"] = link_encontrado
+
             st.session_state.confirmed = True
             st.rerun()
 
@@ -338,6 +423,17 @@ Artículos: {articulos}
         if st.button("🔄 Cancelar"):
             st.session_state.extracted_data = None
             st.rerun()
+
+# ============ LINK DIRECTO DE FACTURACIÓN ============
+if st.session_state.confirmed:
+    st.markdown("---")
+    st.subheader("🔗 Facturar ahora")
+    if st.session_state.get("link_facturacion"):
+        nombre_portal, url_portal = st.session_state["link_facturacion"]
+        st.link_button(f"Ir a facturar en {nombre_portal}", url_portal, type="primary")
+        st.caption("Se abre en una pestaña nueva. Usa los datos de arriba (Ticket, Transacción, CP) junto con tu RFC del Perfil Fiscal.")
+    else:
+        st.info("ℹ️ No tengo guardado el link de facturación de ese proveedor. Agrégalo en el sidebar en '🔗 Portales de Facturación'.")
 
 # ============ HISTORIAL ============
 if st.session_state.upload_history:
@@ -376,6 +472,55 @@ with st.sidebar:
         st.success("✓ Google Sheets conectada")
     else:
         st.warning("✗ Google Sheets - Configura credenciales")
+
+    # ============ PERFIL FISCAL ============
+    st.markdown("---")
+    with st.expander("🧾 Mi Perfil Fiscal", expanded=False):
+        st.caption("Estos datos son fijos (RFC, nombre, etc). Se llenan una vez y se usan siempre.")
+        perfil_actual = load_perfil(gc) if gc else {}
+
+        with st.form("perfil_form"):
+            rfc = st.text_input("RFC", value=perfil_actual.get("RFC", ""))
+            nombre_razon = st.text_input("Nombre / Razón Social", value=perfil_actual.get("Nombre / Razón Social", ""))
+            cp_fiscal = st.text_input("Código Postal (fiscal)", value=perfil_actual.get("Código Postal", ""))
+            email_fact = st.text_input("Email para recibir facturas", value=perfil_actual.get("Email", ""))
+            regimen = st.text_input("Régimen Fiscal", value=perfil_actual.get("Régimen Fiscal", ""))
+            uso_cfdi = st.text_input("Uso de CFDI", value=perfil_actual.get("Uso de CFDI", ""))
+
+            if st.form_submit_button("💾 Guardar perfil"):
+                if gc:
+                    nuevo_perfil = {
+                        "RFC": rfc,
+                        "Nombre / Razón Social": nombre_razon,
+                        "Código Postal": cp_fiscal,
+                        "Email": email_fact,
+                        "Régimen Fiscal": regimen,
+                        "Uso de CFDI": uso_cfdi,
+                    }
+                    if save_perfil(gc, nuevo_perfil):
+                        st.success("Perfil guardado")
+                else:
+                    st.warning("Conecta Google Sheets primero")
+
+    # ============ PORTALES DE FACTURACIÓN ============
+    with st.expander("🔗 Portales de Facturación", expanded=False):
+        st.caption("Links directos por proveedor. Agrega los que falten.")
+        portales_actuales = load_portales(gc) if gc else dict(PORTALES_DEFAULT)
+
+        for proveedor, url in portales_actuales.items():
+            st.markdown(f"- **{proveedor}:** [{url}]({url})")
+
+        st.markdown("**Agregar / actualizar portal:**")
+        with st.form("portal_form"):
+            nuevo_proveedor = st.text_input("Proveedor (ej. Pemex Estación X)")
+            nueva_url = st.text_input("Link de facturación")
+            if st.form_submit_button("➕ Guardar portal"):
+                if gc and nuevo_proveedor and nueva_url:
+                    if save_portal(gc, nuevo_proveedor, nueva_url):
+                        st.success(f"Portal de {nuevo_proveedor} guardado")
+                        st.rerun()
+                else:
+                    st.warning("Completa proveedor y link (y conecta Google Sheets)")
 
     st.markdown("---")
     st.write("**Instrucciones:**")
